@@ -1,8 +1,12 @@
 import argparse
 import asyncio
+import socket
 import time
 
 import aiofiles
+import anyio
+from anyio import create_task_group, sleep
+from async_timeout import timeout
 from loguru import logger
 
 from src import gui
@@ -20,7 +24,6 @@ async def main():
     parser.add_argument("--username", dest="username", type=str, help="Chat username")
     parser.add_argument("--history", dest="history_path", type=str, default="minechat.history", help="File for message history.")
     args = parser.parse_args()
-
     args.token = "fbf8e8d0-7bdc-11ed-8c47-0242ac110002"
 
     loop = asyncio.get_event_loop()
@@ -31,9 +34,7 @@ async def main():
     history_queue = asyncio.Queue()
     watchdog_queue = asyncio.Queue()
 
-    async with aiofiles.open(args.history_path, mode="r") as log_file:
-        async for msg in log_file:
-            messages_queue.put_nowait(msg)
+    await init_history(messages_queue, args.history_path)
 
     try:
         async with open_connection(args.host, 5050) as conn:
@@ -53,13 +54,12 @@ async def main():
                 status_updates_queue.put_nowait(gui.SendingConnectionStateChanged.CLOSED)
                 quit()
 
-            await asyncio.gather(
-                gui.draw(messages_queue, sending_queue, status_updates_queue),
-                read_msgs(args.host, args.port, messages_queue, history_queue, watchdog_queue),
-                save_messages(args.history_path, history_queue),
-                send_msgs(args.host, args.port, sending_queue, writer, watchdog_queue),
-                watch_for_connection(watchdog_queue),
-            )
+            async with create_task_group() as tg:
+                tg.start_soon(gui.draw, messages_queue, sending_queue, status_updates_queue)
+                tg.start_soon(read_msgs, args.host, args.port, messages_queue, history_queue, watchdog_queue)
+                tg.start_soon(save_messages, args.history_path, history_queue)
+                tg.start_soon(send_msgs, sending_queue, writer, watchdog_queue)
+                tg.start_soon(watch_for_connection, watchdog_queue)
 
     except RuntimeError:
         logger.error("Exiting...")
@@ -68,7 +68,7 @@ async def main():
     loop.run_until_complete(gui.draw(messages_queue, sending_queue, status_updates_queue))
 
 
-async def send_msgs(host: str, port: int, queue: asyncio.Queue, writer: asyncio.StreamWriter, watchdog_queue: asyncio.Queue):
+async def send_msgs(queue: asyncio.Queue, writer: asyncio.StreamWriter, watchdog_queue: asyncio.Queue):
     while True:
         if not queue.empty():
             msg = queue.get_nowait()
@@ -103,8 +103,11 @@ async def save_messages(filepath: str, queue: asyncio.Queue):
 
 async def watch_for_connection(queue: asyncio.Queue):
     while True:
-        if queue.empty():
-            await asyncio.sleep(0)
+        async with timeout(delay=1) as cm:
+            if queue.empty():
+                await asyncio.sleep(0)
+            if cm.expired:
+                logger.info(f"1s timeout elapsed")
 
         while not queue.empty():
             msg = queue.get_nowait()
@@ -112,5 +115,25 @@ async def watch_for_connection(queue: asyncio.Queue):
             await asyncio.sleep(0)
 
 
+async def handle_connection(host: str, port: int):
+    writer = None
+    try:
+        reader, writer = await asyncio.open_connection(host, port)
+        yield reader, writer
+    except (OSError, socket.gaierror) as err:
+        logger.error(f"Connection error: {err}")
+    finally:
+        if writer:
+            writer.close()
+            await writer.wait_closed()
+            logger.debug("Closed writer")
+
+
+async def init_history(queue: asyncio.Queue, history_path: str):
+    async with aiofiles.open(history_path, mode="r") as log_file:
+        async for msg in log_file:
+            queue.put_nowait(msg)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    anyio.run(main)

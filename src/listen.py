@@ -1,8 +1,6 @@
 import asyncio
 from asyncio.streams import StreamReader
 
-from loguru import logger
-
 
 async def listen(reader: StreamReader, queue: asyncio.Queue, history: asyncio.Queue, watchdog: asyncio.Queue):
     while not reader.at_eof():

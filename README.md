@@ -2,6 +2,7 @@
  
 
 A UI to interact with Minecraft chat
+![Example](/example_pictures/example.png?raw=true "Example")
 
 ## Install Requirements
 
@@ -39,3 +40,5 @@ python3 register.py
 | host       | Host of chat to connect to | False    |
 | port       | Port of chat to connect to | False    |
 | creds_file | Path to file with token    | False    |
+
+![Example](/example_pictures/reg_example.png?raw=true "Example")

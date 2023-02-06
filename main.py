@@ -1,10 +1,13 @@
 import argparse
+from contextlib import suppress
 
 import aiofiles
 import anyio
 from anyio import create_task_group
 
 from src import gui
+from src.authorise import authorise
+from src.chat_connector import open_connection
 from src.connection_monitoring import ping_pong, reconnect, watch_for_connection
 from src.history import init_history, save_messages
 from src.listen import read_msgs
@@ -37,17 +40,18 @@ async def main():
 
 @reconnect
 async def handle_connection(host: str, read_port: int, send_port: int, token: str, queues: QueueList):
-    async with create_task_group() as tg:
-        await tg.spawn(read_msgs, host, read_port, queues)
-        await tg.spawn(send_msgs, host, send_port, token, queues)
-        await tg.spawn(watch_for_connection, queues.watchdog, queues.status_updates)
-        await tg.spawn(ping_pong, queues.sending)
+    async with open_connection(host, send_port) as conn:
+        reader, writer = conn
+
+        await authorise(reader, writer, token, queues)
+
+        async with create_task_group() as tg:
+            await tg.spawn(read_msgs, host, read_port, queues)
+            await tg.spawn(send_msgs, writer, queues)
+            await tg.spawn(watch_for_connection, queues.watchdog, queues.status_updates)
+            await tg.spawn(ping_pong, queues.sending)
 
 
 if __name__ == "__main__":
-    try:
+    with suppress(gui.TkAppClosed):
         anyio.run(main)
-    except KeyboardInterrupt:
-        pass
-    except gui.TkAppClosed:
-        pass
